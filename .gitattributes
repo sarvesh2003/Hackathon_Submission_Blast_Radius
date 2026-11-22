@@ -1,0 +1,3 @@
+# Never convert line endings: patches and fixtures must stay byte-exact,
+# and shell scripts must keep LF on Windows/WSL checkouts.
+* -text

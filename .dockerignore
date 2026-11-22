@@ -1,0 +1,6 @@
+# Keep answers and bench labels out of every image (no lookup tables allowed).
+.git
+bench/
+out/
+output.jsonl
+sample/answers.json
