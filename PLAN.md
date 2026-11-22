@@ -39,17 +39,26 @@ Strategy: a conservative static selector first (maps from the pinned commit plus
 - [ ] `tools/bench/evaluate.py`: misses (must be 0), cost per kind, CPU time.
 - [ ] Add more changes overnight while the laptop is otherwise idle.
 
-## M4. Probes, selector v2 (Sat evening)
-- [ ] Submission image like the lab but without `apt-get`: sqlglot from the GitHub archive at the pinned commit, patches applied in Python, `ENV SKIP_INTEGRATION=0`, `ENV PYTHONDONTWRITEBYTECODE=1`, precompiled pristine `.pyc`.
-- [ ] Per commit: build a patched tree in `/tmp` cheaply (a symlink farm or an import hook; real copies only of patched files). A parent that preloaded only third-party libraries forks a child; the child imports the patched sqlglot and runs the cheap candidate tests (never the 1 s+ ones) with a timeout; child stdout goes to `/dev/null`.
-- [ ] Decide: 0 failures means `[]`. Any failure, timeout, crash or import error means list all candidates, plus the expensive tests the maps say are reachable.
-- [ ] On the bench, compare per-test and per-file probes, and `pytest.main` with direct `unittest`. Use the cheapest probe that never reports 0 failures when the full suite has failures.
-- [ ] Probe only when it pays: the measured probe CPU must be less than the chance of no failure times the listing cost.
-- [ ] Wall budget: stop probing at about 150 s (220 s in the final) and list the rest.
-- [ ] Gate: bench 0 misses (holdout included), `make sample` 0 misses, and the total (simulated + CPU measured via cgroup) lower than v1. Then READY TO SUBMIT.
+## M4. Probes, selector v2 (Sat night): design approved by the human on Sat Nov 21 after an external review
+Cost identity: every candidate test costs its runtime once (CPU if probed, simulated if listed), so probing only ever wins the 2 s worker fee on commits that break nothing. Levers in order: zero misses, a smaller candidate set, less fixed CPU, then probing.
+- [ ] Submission image like the lab but without `apt-get`: sqlglot from the GitHub archive at the pinned commit, patches applied in Python (bytes, split on `\n` only), `ENV SKIP_INTEGRATION=0`, `ENV PYTHONDONTWRITEBYTECODE=1`, precompiled pristine `.pyc`.
+- [ ] At start, copy the sqlglot tree (sqlglot/, tests/, sqlglotc/; mtimes kept so the `.pyc` stay valid) to `/tmp`. Patched files are written there (and their `.pyc` deleted) so tests that read sources from disk (`test_typing`, `test_sqlglotc`, the subprocess in `test_dialect`) see them. Commits run strictly one at a time; restore files after each.
+- [ ] A warm zygote preloads the third-party libraries, pristine sqlglot and every test module (as pytest's collection does), with `sys.monitoring` recording which functions ran during preload. Build the code-to-functions index once in the zygote.
+- [ ] Per commit:
+    - T0 (no fork): compiled code identical to pristine, or fixture-loader output identical: `[]` unless a source-reading or line-sensitive test maps to the file.
+    - T1 (fork + `__code__` swap): only if the change is confined to function bodies, no changed function ran during preload, and closures match.
+    - T2 (fork from a pre-sqlglot zygote, fresh import from the patched `/tmp` tree): everything else (class bodies, constants, decorators, new or deleted modules).
+- [ ] The child replaces spawn pools with an in-process pool that pickle-round-trips arguments and results AND models brokenness (one unpickling error breaks the pool; verified in the lab). Any error in that round trip lists every pool-using test in the class.
+- [ ] Contagion: `setUpClass` failure lists the class; test-module import failure lists the file; sqlglot import failure lists everything; `__init__.py`, `conftest.py`, `pyproject.toml`, `setup.*` edits list everything.
+- [ ] Decision: candidates over about 8 s in total, or any reached test over about 2 s, means list without probing (the fee is sunk). Otherwise probe cheapest-first and stop at the first failure; list that failure plus every unprobed candidate. All pass with no risk channel triggered: `[]`. Crash, timeout (over 5x recorded, plus slack), unparsable patch or map mismatch: list all candidates (or everything).
+- [ ] Scheduler: integer ms, k = 1..8, LPT, minimum of max load + 2k. Insurance only into slack on already-open workers.
+- [ ] Wall budget guard: list the remaining commits if the run nears the limit.
+- [ ] Gate: bench 0 misses (holdout included), `make sample` 0 misses, total (simulated + cgroup CPU) lower than v1. Then READY TO SUBMIT.
 
 ## M5. Improve (Sat night to Sun about 6 AM)
 - [ ] Fix every miss first. Then cut cost where the bench shows it. Print `[]` for AST-identical comment edits only if many comment changes on the bench show zero failures.
+- [ ] Heavy-test cuts, only if the bench shows they pay: TPC fixture edits that leave the (meta, sql) side unchanged cannot affect `test_execute_tpch/tpcds`; changed TPC queries can be run alone; precomputed pristine hashes of the duckdb SQL strings.
+- [ ] Trim boot CPU (load pandas/duckdb only when needed), gated on bench equality.
 - [ ] Submit hourly whenever there are 0 misses and a lower cost. Log every result in PROGRESS.md.
 
 ## M6. Final hardening (Sun 6:00 to 9:30 AM)
